@@ -3,6 +3,15 @@ const signupForm = document.querySelector('#citizen-signup-form');
 const tabButtons = [...document.querySelectorAll('.tab-button')];
 const loginMessage = document.querySelector('#login-message');
 const signupMessage = document.querySelector('#signup-message');
+const oauthErrors = {
+  not_configured: 'This sign-in provider is not configured yet. Please use email and password or contact the site administrator.',
+  invalid_state: 'The sign-in session expired or could not be verified. Please try again.',
+  cancelled: 'Provider sign-in was cancelled.',
+  provider_error: 'The identity provider could not complete sign-in. Please try again.',
+  unverified_email: 'The provider must return a verified email address to sign in.',
+  account_required: 'Create a CivicSignal account with this email first, then continue with your provider.',
+  sign_in_failed: 'Sign-in could not be completed. Please try again.',
+};
 
 function setMessage(element, text, kind = '') {
   if (!element) return;
@@ -23,6 +32,18 @@ function showTab(target) {
 tabButtons.forEach((button) => {
   button.addEventListener('click', () => showTab(button.dataset.target));
 });
+
+document.querySelectorAll('[data-oauth-provider]').forEach((button) => {
+  button.addEventListener('click', () => {
+    window.location.assign(`/api/auth/citizen/oauth/${button.dataset.oauthProvider}`);
+  });
+});
+
+const oauthError = new URLSearchParams(window.location.search).get('oauth_error');
+if (oauthError && oauthErrors[oauthError]) {
+  setMessage(loginMessage, oauthErrors[oauthError], 'error');
+  window.history.replaceState(null, '', window.location.pathname);
+}
 
 document.querySelectorAll('[data-password-toggle]').forEach((button) => {
   button.addEventListener('click', () => {

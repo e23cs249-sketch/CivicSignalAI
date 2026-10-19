@@ -67,6 +67,12 @@ class MediaWorkflowTests(unittest.TestCase):
         invalid_range = self.create_report(latitude=91, longitude=-74.0, location_confirmed=True)
         self.assertEqual(invalid_range.status_code, 422)
 
+        invalid_longitude = self.create_report(latitude=40.7, longitude=181, location_confirmed=True)
+        self.assertEqual(invalid_longitude.status_code, 422)
+
+        invalid_negative_longitude = self.create_report(latitude=40.7, longitude=-181, location_confirmed=True)
+        self.assertEqual(invalid_negative_longitude.status_code, 422)
+
         created = self.create_report(
             category="drainage_waterlogging",
             latitude=40.7128,
@@ -80,6 +86,11 @@ class MediaWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(saved["latitude"], 40.7128)
         self.assertAlmostEqual(saved["longitude"], -74.006)
         self.assertEqual(saved["area"], "Civic Center")
+
+        boundary = self.create_report(latitude=-90, longitude=180, location_confirmed=True)
+        self.assertEqual(boundary.status_code, 201, boundary.text)
+        self.assertEqual(boundary.json()["latitude"], -90)
+        self.assertEqual(boundary.json()["longitude"], 180)
 
     def test_citizen_uploads_real_private_photos_and_other_citizens_cannot_read_them(self):
         report = self.create_report()

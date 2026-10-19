@@ -133,6 +133,9 @@ The app reads process environment variables; it does not automatically load a `.
 | `CIVICSIGNAL_DATABASE_PATH` | SQLite database location | `./data/civicsignal.db` |
 | `CIVICSIGNAL_COOKIE_SECURE` | Enables the Secure cookie flag for HTTPS | `false` |
 | `CIVICSIGNAL_UPLOAD_DIR` | Private image storage location | `./data/private-uploads` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Google OAuth client and exact callback URI | Unset; Google sign-in disabled |
+| `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, `LINKEDIN_REDIRECT_URI` | LinkedIn OAuth client and exact callback URI | Unset; LinkedIn sign-in disabled |
+| `CIVICSIGNAL_OAUTH_STATE_SECRET` | At least 32 bytes used to sign short-lived OAuth state | Unset; provider sign-in disabled |
 
 The defaults work for local development. For HTTPS, set `CIVICSIGNAL_COOKIE_SECURE=true` in the server environment. Keep uploads in persistent private storage outside the public static directory. Never put real secrets in `.env.example` or commit local environment files.
 
@@ -156,6 +159,8 @@ Open `http://127.0.0.1:8000/` for citizen access. Other routes:
 | `/team-signup` | Staff approval information only |
 | `/team` | Protected staff dashboard |
 
+Vercel serves this FastAPI application from the repository-root `index.py`, which imports `app.main:app`. The app resolves `static/` relative to `app/main.py` and mounts it at `/static`; keep the Vercel project root set to the folder containing `index.py`, `app/`, and `static/`. The deployed `/api/health` endpoint and static page routes were checked. No Vercel routing rewrite is needed for this existing deployment.
+
 ## Citizen Sign-up and Login
 
 1. Open `http://127.0.0.1:8000/` and choose **Sign up**.
@@ -164,6 +169,32 @@ Open `http://127.0.0.1:8000/` for citizen access. Other routes:
 4. For later visits, choose **Log in**, enter the registered email and password, and submit. Successful login opens `/home`.
 
 The citizen session is required to submit reports and view the account's reports. Password reset and Google/LinkedIn sign-in are not configured.
+
+### Google and LinkedIn Sign-in
+
+The authorization-code flows use PKCE, short-lived signed state cookies, server-side token exchange, and verified provider email. Tokens and provider identifiers are not sent to browser JavaScript or persisted. OAuth authenticates an existing active CivicSignal citizen account by its verified email; first create the account through the normal sign-up form using the same email address. A provider cannot create an account or bypass the existing terms acceptance flow. This does not alter the database schema.
+
+To enable production sign-in, add these variables in **Vercel Project → Settings → Environment Variables**, selecting the Production environment (and Preview too if you want OAuth previews):
+
+| Vercel variable | Value |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | Client ID from a Google OAuth web application |
+| `GOOGLE_CLIENT_SECRET` | Client secret from that same Google OAuth client |
+| `GOOGLE_REDIRECT_URI` | `https://civic-signal-ai.vercel.app/api/auth/citizen/oauth/google/callback` |
+| `LINKEDIN_CLIENT_ID` | Client ID from your LinkedIn app |
+| `LINKEDIN_CLIENT_SECRET` | Client secret from that same LinkedIn app |
+| `LINKEDIN_REDIRECT_URI` | `https://civic-signal-ai.vercel.app/api/auth/citizen/oauth/linkedin/callback` |
+| `CIVICSIGNAL_OAUTH_STATE_SECRET` | A newly generated random secret of at least 32 bytes; do not reuse an OAuth client secret |
+
+Generate the state secret locally with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and enter its output directly into Vercel. Do not commit it or paste it into source files.
+
+In **Google Cloud Console**, configure the OAuth consent screen and create an OAuth Client ID of type **Web application**. Add `civic-signal-ai.vercel.app` as an authorized domain and register the exact Google callback URI above under **Authorized redirect URIs**. Request the OpenID Connect `openid`, `email`, and `profile` scopes, and add test users if the consent screen remains in testing mode.
+
+In **LinkedIn Developer Portal**, enable the **Sign In with LinkedIn using OpenID Connect** product for the app, register the exact LinkedIn callback URI above under its authorized redirect URLs, and ensure the `openid`, `profile`, and `email` scopes are available.
+
+The redirect URI in each Vercel variable must exactly match its provider-console entry, including scheme, host, path, and trailing-slash choice. Save the variables and redeploy. OAuth has not been tested against real providers because credentials and provider-console settings are not available in this workspace; until configured, the buttons return a visible setup message.
+
+Vercel serverless filesystems are not durable storage. This project currently uses SQLite and local private-file storage; configure a persistent database and private upload store before relying on production account linking, report persistence, or media uploads. No data was migrated or deleted as part of this change.
 
 ## Staff Account Setup
 

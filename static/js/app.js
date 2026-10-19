@@ -44,15 +44,29 @@ let reportMap = null;
 let reportMarker = null;
 let currentStep = 1;
 
+function validCoordinatePair(latitude, longitude) {
+  return Number.isFinite(latitude)
+    && Number.isFinite(longitude)
+    && latitude >= -90
+    && latitude <= 90
+    && longitude >= -180
+    && longitude <= 180;
+}
+
 function currentPayload() {
+  const latitude = latitudeInput.value ? Number(latitudeInput.value) : null;
+  const longitude = longitudeInput.value ? Number(longitudeInput.value) : null;
+  const coordinatesValid = latitude !== null
+    && longitude !== null
+    && validCoordinatePair(latitude, longitude);
   const payload = {
     title: title.value.trim(),
     description: description.value,
     category: category.value,
     area: area.value.trim() || null,
-    latitude: latitudeInput.value ? Number(latitudeInput.value) : null,
-    longitude: longitudeInput.value ? Number(longitudeInput.value) : null,
-    location_confirmed: locationConfirmed.checked,
+    latitude: coordinatesValid ? latitude : null,
+    longitude: coordinatesValid ? longitude : null,
+    location_confirmed: coordinatesValid && locationConfirmed.checked,
   };
   if (landmark.value.trim()) {
     payload.landmark = landmark.value.trim();
@@ -83,7 +97,11 @@ function updateCategoryCards() {
 }
 
 function updateControls() {
-  locationConfirmed.required = Boolean(latitudeInput.value || longitudeInput.value);
+  const latitude = latitudeInput.value ? Number(latitudeInput.value) : null;
+  const longitude = longitudeInput.value ? Number(longitudeInput.value) : null;
+  locationConfirmed.required = latitude !== null
+    && longitude !== null
+    && validCoordinatePair(latitude, longitude);
   const valid = form.checkValidity();
   previewButton.disabled = !valid || previewButton.dataset.busy === "true";
   submitButton.disabled = !valid || currentStep !== 3 || submitButton.dataset.busy === "true";
@@ -202,6 +220,10 @@ function setLocationStatus(message, isError = false) {
 }
 
 function setCoordinates(latitude, longitude, requiresConfirmation = true) {
+  if (!validCoordinatePair(latitude, longitude)) {
+    setLocationStatus("The selected location is invalid. You can continue without map coordinates.", true);
+    return;
+  }
   latitudeInput.value = latitude.toFixed(6);
   longitudeInput.value = longitude.toFixed(6);
   coordinateDisplay.textContent = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;

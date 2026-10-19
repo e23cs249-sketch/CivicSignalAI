@@ -2,12 +2,29 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.team_auth import provision_team_user
+
+
+class OAuthResponse:
+    def __init__(self, payload):
+        import json
+
+        self.content = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return None
+
+    def read(self, size=-1):
+        return self.content if size < 0 else self.content[:size]
 
 
 class CitizenAuthTests(unittest.TestCase):
@@ -113,6 +130,131 @@ class CitizenAuthTests(unittest.TestCase):
         payload["full_name"] = "  "
         blank_name = self.client.post("/api/auth/citizen/register", json=payload)
         self.assertEqual(blank_name.status_code, 422)
+
+    def test_oauth_links_verified_google_and_linkedin_accounts_server_side(self):
+        self.assertEqual(self.signup().status_code, 200)
+        state_secret = "test-oauth-state-secret-with-at-least-32-bytes"
+
+        for provider, prefix, subject in (
+            ("google", "GOOGLE", "google-subject"),
+            ("linkedin", "LINKEDIN", "linkedin-subject"),
+        ):
+            redirect_uri = f"https://civic-signal-ai.vercel.app/api/auth/citizen/oauth/{provider}/callback"
+            environment = {
+                "CIVICSIGNAL_OAUTH_STATE_SECRET": state_secret,
+                f"{prefix}_CLIENT_ID": f"{provider}-client-id",
+                f"{prefix}_CLIENT_SECRET": f"{provider}-client-secret",
+                f"{prefix}_REDIRECT_URI": redirect_uri,
+            }
+            with self.subTest(provider=provider), patch.dict(os.environ, environment):
+                start = self.client.get(f"/api/auth/citizen/oauth/{provider}", follow_redirects=False)
+                self.assertEqual(start.status_code, 302)
+                authorization = urlparse(start.headers["location"])
+                authorization_query = parse_qs(authorization.query)
+                self.assertEqual(authorization_query["redirect_uri"][0], redirect_uri)
+                self.assertEqual(authorization_query["code_challenge_method"][0], "S256")
+                self.assertNotIn(f"{provider}-client-secret", start.headers["location"])
+                state = authorization_query["state"][0]
+
+                requests = []
+
+                def mocked_urlopen(request, timeout):
+                    requests.append(request)
+                    if request.full_url.endswith("/token") or request.full_url.endswith("/accessToken"):
+                        return OAuthResponse({"access_token": "server-only-access-token"})
+                    return OAuthResponse({
+                        "sub": subject,
+                        "email": self.email,
+                        "email_verified": True,
+                    })
+
+                callback_query = urlencode({"code": "authorization-code", "state": state})
+                with patch("app.api.auth.urllib.request.urlopen", side_effect=mocked_urlopen):
+                    callback = self.client.get(
+                        f"/api/auth/citizen/oauth/{provider}/callback?{callback_query}",
+                        follow_redirects=False,
+                    )
+
+                self.assertEqual(callback.status_code, 303)
+                self.assertEqual(callback.headers["location"], "/home")
+                self.assertEqual(len(requests), 2)
+                token_form = parse_qs(requests[0].data.decode("utf-8"))
+                self.assertEqual(token_form["client_secret"][0], f"{provider}-client-secret")
+                self.assertEqual(token_form["redirect_uri"][0], redirect_uri)
+                self.assertIn("code_verifier", token_form)
+                self.assertEqual(requests[1].get_header("Authorization"), "Bearer server-only-access-token")
+                self.assertEqual(self.client.get("/api/auth/citizen/me").status_code, 200)
+
+    def test_oauth_rejects_state_mismatch_without_contacting_provider(self):
+        environment = {
+            "CIVICSIGNAL_OAUTH_STATE_SECRET": "test-oauth-state-secret-with-at-least-32-bytes",
+            "GOOGLE_CLIENT_ID": "google-client-id",
+            "GOOGLE_CLIENT_SECRET": "google-client-secret",
+            "GOOGLE_REDIRECT_URI": "https://civic-signal-ai.vercel.app/api/auth/citizen/oauth/google/callback",
+        }
+        with patch.dict(os.environ, environment):
+            start = self.client.get("/api/auth/citizen/oauth/google", follow_redirects=False)
+            state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+            with patch("app.api.auth.urllib.request.urlopen") as provider_request:
+                callback = self.client.get(
+                    f"/api/auth/citizen/oauth/google/callback?{urlencode({'code': 'code', 'state': state + 'x'})}",
+                    follow_redirects=False,
+                )
+
+        self.assertEqual(callback.status_code, 303)
+        self.assertIn("oauth_error=invalid_state", callback.headers["location"])
+        provider_request.assert_not_called()
+
+    def test_oauth_requires_configuration(self):
+        with patch.dict(os.environ, {
+            "CIVICSIGNAL_OAUTH_STATE_SECRET": "",
+            "GOOGLE_CLIENT_ID": "",
+            "GOOGLE_CLIENT_SECRET": "",
+            "GOOGLE_REDIRECT_URI": "",
+        }):
+            response = self.client.get("/api/auth/citizen/oauth/google", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("oauth_error=not_configured", response.headers["location"])
+
+    def test_oauth_requires_the_exact_provider_callback_path(self):
+        with patch.dict(os.environ, {
+            "CIVICSIGNAL_OAUTH_STATE_SECRET": "test-oauth-state-secret-with-at-least-32-bytes",
+            "GOOGLE_CLIENT_ID": "google-client-id",
+            "GOOGLE_CLIENT_SECRET": "google-client-secret",
+            "GOOGLE_REDIRECT_URI": "https://civic-signal-ai.vercel.app/wrong-callback",
+        }):
+            response = self.client.get("/api/auth/citizen/oauth/google", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("oauth_error=not_configured", response.headers["location"])
+
+    def test_oauth_does_not_create_an_account_for_a_new_provider_email(self):
+        environment = {
+            "CIVICSIGNAL_OAUTH_STATE_SECRET": "test-oauth-state-secret-with-at-least-32-bytes",
+            "GOOGLE_CLIENT_ID": "google-client-id",
+            "GOOGLE_CLIENT_SECRET": "google-client-secret",
+            "GOOGLE_REDIRECT_URI": "https://civic-signal-ai.vercel.app/api/auth/citizen/oauth/google/callback",
+        }
+        with patch.dict(os.environ, environment):
+            start = self.client.get("/api/auth/citizen/oauth/google", follow_redirects=False)
+            state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+            with patch("app.api.auth.urllib.request.urlopen", side_effect=[
+                OAuthResponse({"access_token": "server-only-access-token"}),
+                OAuthResponse({
+                    "sub": "unregistered-subject",
+                    "email": "new-citizen@example.test",
+                    "email_verified": True,
+                }),
+            ]):
+                callback = self.client.get(
+                    f"/api/auth/citizen/oauth/google/callback?{urlencode({'code': 'code', 'state': state})}",
+                    follow_redirects=False,
+                )
+
+        self.assertEqual(callback.status_code, 303)
+        self.assertIn("oauth_error=account_required", callback.headers["location"])
+        self.assertEqual(self.client.get("/api/auth/citizen/me").status_code, 401)
 
     def test_reports_are_private_to_their_citizen_and_admins_can_still_view_them(self):
         self.assertEqual(self.signup().status_code, 200)

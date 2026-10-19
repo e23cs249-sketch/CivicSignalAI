@@ -104,6 +104,27 @@ class TeamWorkflowApiTests(unittest.TestCase):
         })
         self.assertEqual(limited.status_code, 429)
 
+    def test_inactive_staff_account_cannot_create_a_session(self):
+        connection = database.connect_database()
+        try:
+            connection.execute(
+                "UPDATE team_users SET is_active = 0 WHERE email = ?",
+                (self.staff_email,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        response = self.client.post("/api/auth/team/login", json={
+            "email": self.staff_email,
+            "password": self.staff_password,
+        })
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "Work email or password is incorrect.")
+        self.assertNotIn("set-cookie", response.headers)
+        self.assertEqual(self.client.get("/api/auth/team/me").status_code, 401)
+        self.assertEqual(self.client.get("/team", follow_redirects=False).status_code, 303)
+
     def test_cross_origin_status_update_is_rejected(self):
         self.login_team()
         report_id = self.create_report()
